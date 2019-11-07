@@ -22,21 +22,46 @@ class S3:
         self.resource = boto3.resource('s3', region_name=region)
         self.bucket = bucket
 
-    def put_object(self, key, file_path):
-        """
-        Put the object into S3 and return the S3 URL of the object
-        """
-        self.resource.Object(self.bucket, key).put(Body=open(file_path, 'rb'))
-        if self.region == 'us-east-1':
-            return "https://s3.amazonaws.com/{bucket}/{key}".format(
+    def build_pathing_style(self, style, key):
+        if style == 'path':
+            if self.region == 'us-east-1':
+                return "https://s3.amazonaws.com/{bucket}/{key}".format(
+                    bucket=self.bucket,
+                    key=key
+                )
+            return "https://s3-{region}.amazonaws.com/{bucket}/{key}".format(
+                region=self.region,
                 bucket=self.bucket,
                 key=key
             )
-        return "https://s3-{region}.amazonaws.com/{bucket}/{key}".format(
-            region=self.region,
-            bucket=self.bucket,
-            key=key
-        )
+        if style == 'virtual-hosted':
+            if self.region == 'us-east-1':
+                return "http://{bucket}.s3.amazonaws.com/{key}".format(
+                    bucket=self.bucket,
+                    key=key
+                )
+            return "http://{bucket}.s3-{region}.amazonaws.com/{key}".format(
+                region=self.region,
+                bucket=self.bucket,
+                key=key
+            )
+        raise Exception("Unknown upload style syntax, path or virtual-hosted must be specified.")
+
+
+    def put_object(self, key, file_path, style="path", pre_check=False):
+        """
+        Put the object into S3 and return the S3 URL of the object
+        """
+        if pre_check:
+            try:
+                self.client.get_object(Bucket=self.bucket, Key=key)
+            except self.client.exceptions.NoSuchKey:
+                LOGGER.info("Uploading %s as %s to S3 Bucket %s in %s", file_path, key, self.bucket, self.region)
+                self.resource.Object(self.bucket, key).put(Body=open(file_path, 'rb'))
+            finally:
+                return self.build_pathing_style(style, key) #pylint: disable=W0150
+        self.resource.Object(self.bucket, key).put(Body=open(file_path, 'rb'))
+        return self.build_pathing_style(style, key)
 
     def read_object(self, key):
         s3_object = self.resource.Object(self.bucket, key)

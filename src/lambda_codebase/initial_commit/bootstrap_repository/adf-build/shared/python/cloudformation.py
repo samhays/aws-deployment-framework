@@ -4,17 +4,24 @@
 """CloudFormation module used throughout the ADF
 """
 
+import random
 import re
 import os
 
 from botocore.exceptions import WaiterError, ClientError
+from botocore.config import Config
 from errors import InvalidTemplateError, GenericAccountConfigureError
 from logger import configure_logger
 from paginator import paginator
 
-
 LOGGER = configure_logger(__name__)
 STACK_TERMINATION_PROTECTION = os.environ.get('TERMINATION_PROTECTION', False)
+CFN_CONFIG = Config(
+    retries=dict(
+        max_attempts=10
+    )
+)
+CFN_UNACCEPTED_CHARS = re.compile(r"[^-a-zA-Z0-9:/._+]")
 
 class StackProperties:
     clean_stack_status = [
@@ -79,10 +86,11 @@ class StackProperties:
             return []
 
     def _get_stack_name(self):
-        return 'adf-{0}-base-{1}'.format(
+        raw_stack_name = 'adf-{0}-base-{1}'.format(
             self._get_geo_prefix(),
             self.ou_name
         )
+        return CFN_UNACCEPTED_CHARS.sub("-", raw_stack_name)
 
 
 class CloudFormation(StackProperties):
@@ -99,7 +107,7 @@ class CloudFormation(StackProperties):
             parameters=None,
             account_id=None, # Used for logging visibility
     ):
-        self.client = role.client('cloudformation', region_name=region)
+        self.client = role.client('cloudformation', region_name=region, config=CFN_CONFIG)
         self.wait = wait
         self.parameters = parameters
         self.account_id = account_id
@@ -133,7 +141,7 @@ class CloudFormation(StackProperties):
         waiter.wait(
             StackName=self.stack_name,
             WaiterConfig={
-                'Delay': 10,
+                'Delay': CloudFormation._random_delay(),
                 'MaxAttempts': 45
             }
         )
@@ -149,7 +157,7 @@ class CloudFormation(StackProperties):
             StackName=self.stack_name,
             ChangeSetName=self.stack_name,
             WaiterConfig={
-                'Delay': 10,
+                'Delay': CloudFormation._random_delay(),
                 'MaxAttempts': 20
             }
         )
@@ -209,7 +217,6 @@ class CloudFormation(StackProperties):
             LOGGER.error("%s - ERROR: %s", self.account_id, err["StatusReason"], exc_info=1)
             self._delete_change_set()
             raise
-
 
     @staticmethod
     def _change_set_failed_due_to_empty(status, reason):
@@ -282,6 +289,7 @@ class CloudFormation(StackProperties):
 
     def get_stack_output(self, value):
         try:
+            LOGGER.debug("Retrieving value: %s", value)
             response = self.client.describe_stacks(
                 StackName=self.stack_name
             )
@@ -309,3 +317,7 @@ class CloudFormation(StackProperties):
         LOGGER.debug('Attempted Delete of stack: %s', stack_name)
         if self.wait:
             self._wait_stack('stack_delete_complete')
+
+    @staticmethod
+    def _random_delay():
+        return random.randint(11, 49)
